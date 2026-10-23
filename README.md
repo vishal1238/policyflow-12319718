@@ -1,59 +1,223 @@
-<p align="center"><a href="https://laravel.com" target="_blank"><img src="https://raw.githubusercontent.com/laravel/art/master/logo-lockup/5%20SVG/2%20CMYK/1%20Full%20Color/laravel-logolockup-cmyk-red.svg" width="400" alt="Laravel Logo"></a></p>
+# PolicyFlow
 
-<p align="center">
-<a href="https://github.com/laravel/framework/actions"><img src="https://github.com/laravel/framework/workflows/tests/badge.svg" alt="Build Status"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/dt/laravel/framework" alt="Total Downloads"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/v/laravel/framework" alt="Latest Stable Version"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/l/laravel/framework" alt="License"></a>
-</p>
+PolicyFlow is a small Laravel 11-style REST API for issuing travel-insurance policies. The app is intentionally simple: no UI, no queues, no Docker, no Redis, and no background jobs. It uses SQLite by default, but the same migrations work with MySQL/PostgreSQL with the usual DB settings in `.env`.
 
-## About Laravel
+## Stack
 
-Laravel is a web application framework with expressive, elegant syntax. We believe development must be an enjoyable and creative experience to be truly fulfilling. Laravel takes the pain out of development by easing common tasks used in many web projects, such as:
+- Laravel 12 app (works for the requested Laravel 11 API pattern)
+- SQLite by default
+- MySQL/Postgres supported via same migrations
+- PHPUnit for feature and unit coverage
 
-- [Simple, fast routing engine](https://laravel.com/docs/routing).
-- [Powerful dependency injection container](https://laravel.com/docs/container).
-- Multiple back-ends for [session](https://laravel.com/docs/session) and [cache](https://laravel.com/docs/cache) storage.
-- Expressive, intuitive [database ORM](https://laravel.com/docs/eloquent).
-- Database agnostic [schema migrations](https://laravel.com/docs/migrations).
-- [Robust background job processing](https://laravel.com/docs/queues).
-- [Real-time event broadcasting](https://laravel.com/docs/broadcasting).
+## Setup
 
-Laravel is accessible, powerful, and provides tools required for large, robust applications.
+1. Install PHP dependencies:
+   ```bash
+   composer install
+   ```
+2. Copy the environment file:
+   ```bash
+   cp .env.example .env
+   ```
+3. Generate the app key:
+   ```bash
+   php artisan key:generate
+   ```
+4. Run the database migrations:
+   ```bash
+   php artisan migrate
+   ```
+5. Start the app:
+   ```bash
+   php artisan serve
+   ```
 
-## Learning Laravel
+## Test command
 
-Laravel has the most extensive and thorough [documentation](https://laravel.com/docs) and video tutorial library of all modern web application frameworks, making it a breeze to get started with the framework. You can also check out [Laravel Learn](https://laravel.com/learn), where you will be guided through building a modern Laravel application.
+```bash
+php artisan test
+```
 
-If you don't feel like reading, [Laracasts](https://laracasts.com) can help. Laracasts contains thousands of video tutorials on a range of topics including Laravel, modern PHP, unit testing, and JavaScript. Boost your skills by digging into our comprehensive video library.
+## Switching to MySQL/Postgres
 
-## Laravel Sponsors
+Update `.env` to the DB driver you want, for example:
 
-We would like to extend our thanks to the following sponsors for funding Laravel development. If you are interested in becoming a sponsor, please visit the [Laravel Partners program](https://partners.laravel.com).
+```env
+DB_CONNECTION=mysql
+DB_HOST=127.0.0.1
+DB_PORT=3306
+DB_DATABASE=policyflow
+DB_USERNAME=root
+DB_PASSWORD=secret
+```
 
-### Premium Partners
+or:
 
-- **[Vehikl](https://vehikl.com)**
-- **[Tighten Co.](https://tighten.co)**
-- **[Kirschbaum Development Group](https://kirschbaumdevelopment.com)**
-- **[64 Robots](https://64robots.com)**
-- **[Curotec](https://www.curotec.com/services/technologies/laravel)**
-- **[DevSquad](https://devsquad.com/hire-laravel-developers)**
-- **[Redberry](https://redberry.international/laravel-development)**
-- **[Active Logic](https://activelogic.com)**
+```env
+DB_CONNECTION=pgsql
+DB_HOST=127.0.0.1
+DB_PORT=5432
+DB_DATABASE=policyflow
+DB_USERNAME=postgres
+DB_PASSWORD=secret
+```
 
-## Contributing
+Then run:
 
-Thank you for considering contributing to the Laravel framework! The contribution guide can be found in the [Laravel documentation](https://laravel.com/docs/contributions).
+```bash
+php artisan migrate
+```
 
-## Code of Conduct
+The schema is intentionally database-agnostic and uses standard SQL features.
 
-In order to ensure that the Laravel community is welcoming to all, please review and abide by the [Code of Conduct](https://laravel.com/docs/contributions#code-of-conduct).
+## API endpoints
 
-## Security Vulnerabilities
+### Create policy request
 
-If you discover a security vulnerability within Laravel, please send an e-mail to Taylor Otwell via [taylor@laravel.com](mailto:taylor@laravel.com). All security vulnerabilities will be promptly addressed.
+```bash
+POST /api/policy-requests
+```
 
-## License
+Body example:
 
-The Laravel framework is open-sourced software licensed under the [MIT license](https://opensource.org/licenses/MIT).
+```json
+{
+  "client_request_id": "REQ-1001",
+  "agent_id": "AGENT-01",
+  "customer_name": "Jane Doe",
+  "date_of_birth": "1990-01-15",
+  "destination": "DOMESTIC",
+  "trip_start": "2026-06-01",
+  "trip_end": "2026-06-05",
+  "plan_code": "PLUS",
+  "sum_insured": 300000
+}
+```
+
+Response:
+
+- `201` for a new request
+- `200` for a duplicate `(agent_id, client_request_id)`
+- `422` for validation issues
+
+### Fetch a policy request
+
+```bash
+GET /api/policy-requests/{uuid}
+```
+
+Returns the current state, premium, provider reference, policy number, attempt count, last error, and historical state transitions.
+
+### List policy requests
+
+```bash
+GET /api/policy-requests?status=VALIDATED&page=1
+```
+
+### Submit for issuance
+
+```bash
+POST /api/policy-requests/{uuid}/submit
+```
+
+This is the core issuance flow. It takes a row lock, increments attempts, moves the request to `SUBMITTED`, then calls the mock insurer directly in-process.
+
+### Mock insurer callback
+
+```bash
+POST /api/mock-insurer/callback
+```
+
+Body:
+
+```json
+{
+  "provider_event_id": "EVT-001",
+  "provider_reference": "REF-ABC123",
+  "type": "POLICY_ISSUED",
+  "policy_number": "POL-9001"
+}
+```
+
+Success response:
+
+```json
+{
+  "data": {
+    "status": "accepted"
+  }
+}
+```
+
+Error response:
+
+```json
+{
+  "error": {
+    "code": "POLICY_NOT_FOUND",
+    "message": "Policy not found."
+  }
+}
+```
+
+## Mock insurer behavior
+
+The provider logic lives in `app/Services/MockInsurer.php` and is called directly from the app, not over HTTP. This avoids deadlocks and makes local testing much simpler than using `php artisan serve` plus HTTP calls to the same app.
+
+Supported scenarios in `mock_scenario` are:
+
+- `SUCCESS`
+- `TEMPORARY_FAILURE`
+- `TIMEOUT_AFTER_ISSUE`
+- `DELAYED_CALLBACK`
+- `DUPLICATE_CALLBACK`
+
+## Reliability cases implemented
+
+1. Duplicate intake
+   - unique index on `(agent_id, client_request_id)`
+   - row lock within the store transaction
+   - idempotency check before creating a new record
+
+2. Duplicate callback
+   - unique index on `provider_event_id`
+   - a second callback returns `{"status":"duplicate_ignored"}` and does nothing
+
+3. Timeout handling
+   - if the provider times out, the app performs a status lookup
+   - if a matching policy exists, it is accepted as issued
+   - if it does not exist, the request moves to `NEEDS_RECONCILIATION`
+
+## Other reliability cases to handle later
+
+The following are not fully automated in this small app, but they are the next areas to cover:
+
+- duplicate policy numbers from insurer retries
+- provider event replay after a successful issue
+- retriable callback ordering issues
+- out-of-order state transitions across multiple worker processes
+
+The usual approach would be to add stronger idempotency keys, store provider event dedupe tables, lock rows consistently, and treat the insurer callback as a source of truth after successful validation.
+
+## Assumptions and limitations
+
+- This is a small internal API, not a production-grade insurer system.
+- Premiums are calculated using integer and decimal math with `bcmath` and are stored as strings.
+- The mock insurer is in-memory and deliberately simple.
+- There is no external provider integration, no real authentication, and no queue system.
+- Callback handling is synchronous and local to the app.
+
+## Example request commands
+
+See `examples/requests.sh` for curl examples.
+
+## Migration notes
+
+The migrations create the following tables:
+
+- `policy_requests`
+- `issuance_attempts`
+- `provider_events`
+- `policy_state_history`
+
+The schema is compatible with SQLite, MySQL, and PostgreSQL as long as the driver is configured in `.env`.
