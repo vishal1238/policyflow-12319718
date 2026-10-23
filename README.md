@@ -1,46 +1,45 @@
 # PolicyFlow
 
-PolicyFlow is a small Laravel 11-style REST API for issuing travel-insurance policies. The app is intentionally simple: no UI, no queues, no Docker, no Redis, and no background jobs. It uses SQLite by default, but the same migrations work with MySQL/PostgreSQL with the usual DB settings in `.env`.
+PolicyFlow is a lightweight Laravel REST API for issuing travel-insurance policies.
 
-## Stack
-
-- Laravel 12 app (works for the requested Laravel 11 API pattern)
-- SQLite by default
-- MySQL/Postgres supported via same migrations
-- PHPUnit for feature and unit coverage
+It is intentionally simple: no UI, no Docker, no Redis, no queues, and no background workers. SQLite is the default database, and the same migrations are compatible with MySQL and PostgreSQL.
 
 ## Setup
 
-1. Install PHP dependencies:
+1. Install dependencies:
    ```bash
    composer install
    ```
+
 2. Copy the environment file:
    ```bash
    cp .env.example .env
    ```
+
 3. Generate the app key:
    ```bash
    php artisan key:generate
    ```
+
 4. Run the database migrations:
    ```bash
    php artisan migrate
    ```
+
 5. Start the app:
    ```bash
    php artisan serve
    ```
 
-## Test command
+## Run tests
 
 ```bash
 php artisan test
 ```
 
-## Switching to MySQL/Postgres
+## Database switching
 
-Update `.env` to the DB driver you want, for example:
+Use SQLite by default, or switch to MySQL/Postgres in `.env`:
 
 ```env
 DB_CONNECTION=mysql
@@ -68,17 +67,15 @@ Then run:
 php artisan migrate
 ```
 
-The schema is intentionally database-agnostic and uses standard SQL features.
-
 ## API endpoints
 
-### Create policy request
+### Create a policy request
 
 ```bash
 POST /api/policy-requests
 ```
 
-Body example:
+Example body:
 
 ```json
 {
@@ -95,18 +92,17 @@ Body example:
 ```
 
 Response:
-
 - `201` for a new request
-- `200` for a duplicate `(agent_id, client_request_id)`
-- `422` for validation issues
+- `200` if the same `agent_id` + `client_request_id` already exists
+- `422` for validation errors
 
-### Fetch a policy request
+### Get one policy request
 
 ```bash
 GET /api/policy-requests/{uuid}
 ```
 
-Returns the current state, premium, provider reference, policy number, attempt count, last error, and historical state transitions.
+Returns the state, premium, provider reference, policy number, attempt count, last error, and state history.
 
 ### List policy requests
 
@@ -120,15 +116,13 @@ GET /api/policy-requests?status=VALIDATED&page=1
 POST /api/policy-requests/{uuid}/submit
 ```
 
-This is the core issuance flow. It takes a row lock, increments attempts, moves the request to `SUBMITTED`, then calls the mock insurer directly in-process.
-
-### Mock insurer callback
+### Callback endpoint
 
 ```bash
 POST /api/mock-insurer/callback
 ```
 
-Body:
+Body example:
 
 ```json
 {
@@ -139,85 +133,49 @@ Body:
 }
 ```
 
-Success response:
-
-```json
-{
-  "data": {
-    "status": "accepted"
-  }
-}
-```
-
-Error response:
-
-```json
-{
-  "error": {
-    "code": "POLICY_NOT_FOUND",
-    "message": "Policy not found."
-  }
-}
-```
-
-## Mock insurer behavior
-
-The provider logic lives in `app/Services/MockInsurer.php` and is called directly from the app, not over HTTP. This avoids deadlocks and makes local testing much simpler than using `php artisan serve` plus HTTP calls to the same app.
-
-Supported scenarios in `mock_scenario` are:
-
-- `SUCCESS`
-- `TEMPORARY_FAILURE`
-- `TIMEOUT_AFTER_ISSUE`
-- `DELAYED_CALLBACK`
-- `DUPLICATE_CALLBACK`
-
-## Reliability cases implemented
+## Reliability cases covered
 
 1. Duplicate intake
-   - unique index on `(agent_id, client_request_id)`
-   - row lock within the store transaction
-   - idempotency check before creating a new record
+   - `(agent_id, client_request_id)` is unique
+   - the request flow uses row locking and duplicate handling
 
 2. Duplicate callback
-   - unique index on `provider_event_id`
-   - a second callback returns `{"status":"duplicate_ignored"}` and does nothing
+   - `provider_event_id` is unique
+   - repeated callback payloads are ignored
 
-3. Timeout handling
-   - if the provider times out, the app performs a status lookup
-   - if a matching policy exists, it is accepted as issued
-   - if it does not exist, the request moves to `NEEDS_RECONCILIATION`
+3. Timeout / reconciliation
+   - the app checks insurer status after a timeout
+   - missing policy moves to `NEEDS_RECONCILIATION`
 
-## Other reliability cases to handle later
+## Premium calculation
 
-The following are not fully automated in this small app, but they are the next areas to cover:
+The premium is calculated using `bcmath` with this formula:
 
-- duplicate policy numbers from insurer retries
-- provider event replay after a successful issue
-- retriable callback ordering issues
-- out-of-order state transitions across multiple worker processes
+```text
+premium = daily_rate x days x age_mult x dest_mult x coverage_mult
+```
 
-The usual approach would be to add stronger idempotency keys, store provider event dedupe tables, lock rows consistently, and treat the insurer callback as a source of truth after successful validation.
+- Daily rate: BASIC 12, PLUS 20, PREMIUM 30
+- Days = trip_end - trip_start + 1, minimum 1
+- Age multiplier uses trip-start age:
+  - 0-17 = 1.10
+  - 18-60 = 1.00
+  - 61-70 = 1.50
+  - 71+ = 2.00
+- Destination multiplier:
+  - DOMESTIC = 1.00
+  - INTERNATIONAL = 1.80
+- Coverage multiplier:
+  - 100000 = 1.00
+  - 300000 = 1.25
+  - 500000 = 1.50
 
-## Assumptions and limitations
+Example:
+- INTERNATIONAL, PLUS, 300000, 5 days, age 28
+- result: 225.00
 
-- This is a small internal API, not a production-grade insurer system.
-- Premiums are calculated using integer and decimal math with `bcmath` and are stored as strings.
-- The mock insurer is in-memory and deliberately simple.
-- There is no external provider integration, no real authentication, and no queue system.
-- Callback handling is synchronous and local to the app.
+## Notes
 
-## Example request commands
-
-See `examples/requests.sh` for curl examples.
-
-## Migration notes
-
-The migrations create the following tables:
-
-- `policy_requests`
-- `issuance_attempts`
-- `provider_events`
-- `policy_state_history`
-
-The schema is compatible with SQLite, MySQL, and PostgreSQL as long as the driver is configured in `.env`.
+- The app calls the mock insurer directly from the Laravel process instead of via HTTP to avoid deadlocks in local development.
+- This is a small internal API and not a full production insurer integration.
+- The README is intentionally focused on setup and behavior rather than generated Laravel template content.
